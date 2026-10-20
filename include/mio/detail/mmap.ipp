@@ -29,6 +29,11 @@
 
 #ifdef _WIN32
 # include <vector>
+// UWP (WINAPI_FAMILY_APP) apps must use the *FromApp variants of the file and file mapping APIs
+# if defined(WINAPI_FAMILY_PARTITION) && !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+#  define MIO_WINAPI_APP 1
+#  include <fileapifromapp.h>
+# endif
 #endif
 
 #ifndef _WIN32
@@ -73,6 +78,13 @@ template<
     >::type
 > file_handle_type open_file_helper(const String& path, const access_mode mode)
 {
+#ifdef MIO_WINAPI_APP
+    return ::CreateFile2FromAppW(s_2_ws(path).c_str(),
+            mode == access_mode::write ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+            nullptr);
+#else
     return ::CreateFileW(s_2_ws(path).c_str(),
             mode == access_mode::write ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -80,6 +92,7 @@ template<
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             0);
+#endif
 }
 
 template<typename String>
@@ -88,6 +101,13 @@ typename std::enable_if<
     file_handle_type
 >::type open_file_helper(const String& path, const access_mode mode)
 {
+#ifdef MIO_WINAPI_APP
+    return ::CreateFile2FromAppW(c_str(path),
+            mode == access_mode::write ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+            nullptr);
+#else
     return ::CreateFileW(c_str(path),
             mode == access_mode::write ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -95,6 +115,7 @@ typename std::enable_if<
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             0);
+#endif
 }
 
 } // win
@@ -177,6 +198,15 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
     const int64_t length_to_map = offset - aligned_offset + length;
 #ifdef _WIN32
     const int64_t max_file_size = offset + length;
+#ifdef MIO_WINAPI_APP
+    const auto file_mapping_handle = ::CreateFileMappingFromApp(
+            file_handle,
+            0,
+            mode == access_mode::read ? PAGE_READONLY :
+            mode == access_mode::write ? PAGE_READWRITE : PAGE_WRITECOPY,
+            static_cast<ULONG64>(max_file_size),
+            0);
+#else
     const auto file_mapping_handle = ::CreateFileMapping(
             file_handle,
             0,
@@ -185,11 +215,20 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
             win::int64_high(max_file_size),
             win::int64_low(max_file_size),
             0);
+#endif
     if(file_mapping_handle == invalid_handle)
     {
         error = detail::last_error();
         return {};
     }
+#ifdef MIO_WINAPI_APP
+    char* mapping_start = static_cast<char*>(::MapViewOfFileFromApp(
+            file_mapping_handle,
+            mode == access_mode::read ? FILE_MAP_READ :
+            mode == access_mode::write ? FILE_MAP_WRITE : FILE_MAP_COPY,
+            static_cast<ULONG64>(aligned_offset),
+            length_to_map));
+#else
     char* mapping_start = static_cast<char*>(::MapViewOfFile(
             file_mapping_handle,
             mode == access_mode::read ? FILE_MAP_READ :
@@ -197,6 +236,7 @@ inline mmap_context memory_map(const file_handle_type file_handle, const int64_t
             win::int64_high(aligned_offset),
             win::int64_low(aligned_offset),
             length_to_map));
+#endif
     if(mapping_start == nullptr)
     {
         // Close file handle if mapping it failed.
